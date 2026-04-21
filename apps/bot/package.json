@@ -1,0 +1,15 @@
+{
+  "name": "@meetingbot/bot",
+  "version": "1.0.0",
+  "private": true,
+  "main": "src/index.ts",
+  "scripts": {
+    "cli:join": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@meetingbot/shared": "1.0.0",
+    "@playwright/test": "^1.59.1",
+    "dotenv": "^17.4.2",
+    "playwright": "^1.59.1"
+  }
+}

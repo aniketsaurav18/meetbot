@@ -1,0 +1,9 @@
+node_modules
+apps/**/node_modules
+debug-screenshots
+.git
+.env
+playwright-report
+test-results
+.playwright
+dist
