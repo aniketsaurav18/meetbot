@@ -37,4 +37,18 @@
             log(e);
         }
     }
+
+    function startRecordAudio(){
+        const mediaEle = findMediaElement();
+        if(mediaEle == null){
+            log("could not fine media element");
+            return;
+        }
+        mergeMediaElement(mediaEle);
+        mediarecorder = new MediaRecorder(dest.stream);
+        mediarecorder.start(1000);
+        mediarecorder.ondataavailable((e) => {
+            console.log(e.data);
+        })
+    }
 })();
