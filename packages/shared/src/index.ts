@@ -3,6 +3,8 @@ export interface JoinMeetRequest {
   botDisplayName: string;
   joinTimeoutMs?: number;
   stayInMeetingMs?: number;
+  /** When set, overrides `HEADLESS` env (default: headless unless `HEADLESS=false`). */
+  headless?: boolean;
 }
 
 export interface JoinMeetResult {

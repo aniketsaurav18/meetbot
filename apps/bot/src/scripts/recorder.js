@@ -12,6 +12,7 @@
     function findMediaElement(){
         try{
             const element = document.querySelectorAll("audio");
+            log("found media element.", element.length);
             if(element.length == 0){
                 log("no media element found");
                 return null;
@@ -29,6 +30,7 @@
             mediaElements.forEach((ele) => {
                 let mediaStream = ele.srcObject;
                 if(mediaStream instanceof MediaStream && mediaStream.getAudioTracks().length > 0){
+                    log("adding media source")
                     let source = audiocontext.createMediaStreamSource(mediaStream);
                     source.connect(dest);
                 }
@@ -47,8 +49,11 @@
         mergeMediaElement(mediaEle);
         mediarecorder = new MediaRecorder(dest.stream);
         mediarecorder.start(1000);
-        mediarecorder.ondataavailable((e) => {
-            console.log(e.data);
-        })
+        log("running the recorder")
+        mediarecorder.ondataavailable = function (e){
+            log(e.data);
+        }
     }
+    window.startRecordAudio = startRecordAudio;
+    startRecordAudio();
 })();

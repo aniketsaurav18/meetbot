@@ -1,5 +1,5 @@
 import { Body, Controller, Get, Post } from '@nestjs/common';
-import { IsInt, IsOptional, IsString, IsUrl, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsOptional, IsString, IsUrl, Min } from 'class-validator';
 import type { JoinMeetResult } from '@meetingbot/shared';
 import { BotService } from './bot.service';
 
@@ -22,6 +22,10 @@ class JoinBotDto {
   @IsInt()
   @Min(0)
   stayInMeetingMs?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  headless?: boolean;
 }
 
 @Controller()
