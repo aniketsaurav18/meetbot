@@ -82,8 +82,15 @@ const IN_MEETING_SELECTORS = [
   'button[data-tooltip-id*="hangup"]',
 ];
 
-export async function joinMeet(request: JoinMeetRequest): Promise<JoinMeetResult> {
-  const sessionId = randomUUID();
+type JoinMeetHooks = {
+  onRecordingStarted?: (details: { sessionId: string; joinedAt: string }) => Promise<void> | void;
+};
+
+export async function joinMeet(
+  request: JoinMeetRequest,
+  hooks: JoinMeetHooks = {},
+): Promise<JoinMeetResult> {
+  const sessionId = request.sessionId ?? randomUUID();
   const joinTimeoutMs = request.joinTimeoutMs ?? DEFAULT_JOIN_TIMEOUT_MS;
   const headless = request.headless ?? DEFAULT_HEADLESS;
 
@@ -118,6 +125,8 @@ export async function joinMeet(request: JoinMeetRequest): Promise<JoinMeetResult
     });
 
     const joinedAt = new Date().toISOString();
+    await hooks.onRecordingStarted?.({ sessionId, joinedAt });
+    scheduleAutoLeave(browser, request.stayInMeetingMs);
 
     await waitForBrowserClosed(browser);
 
@@ -465,6 +474,18 @@ function waitForBrowserClosed(browser: Browser): Promise<void> {
       resolve();
     });
   });
+}
+
+function scheduleAutoLeave(browser: Browser, stayInMeetingMs: number | undefined): void {
+  if (typeof stayInMeetingMs !== 'number' || stayInMeetingMs <= 0) {
+    return;
+  }
+
+  setTimeout(() => {
+    if (browser.isConnected()) {
+      browser.close().catch(() => undefined);
+    }
+  }, stayInMeetingMs);
 }
 
 async function becomesVisible(locator: ReturnType<Page['locator']>, timeout: number): Promise<boolean> {

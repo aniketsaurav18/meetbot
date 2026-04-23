@@ -1,23 +1,24 @@
 # Meeting Bot
 
-This repository is being built step by step.
+This repository contains a Google Meet bot flow with:
+
+- an Express backend that queues sessions in BullMQ/Redis
+- a separate worker service that consumes the queue and launches one bot container per meeting
+- a Playwright bot container that joins the meeting and streams audio chunks
+- a transcription service that receives chunks over WebSocket and writes transcript updates to Redis Streams
 
 ## Current Scope
 
 Implemented:
-- project/workspace scaffolding
-- NestJS backend bootstrap
-- headed Playwright Google Meet join bot
-- manual join API endpoint
-- manual join CLI command
+- Express backend API
+- BullMQ + Redis job queue
+- Playwright Google Meet join bot
+- transcription service with Redis Streams
+- Dockerfiles for all apps
+- `docker-compose.yml` for local startup
 
 Not implemented yet:
-- recorder service
-- transcription service
-- Redis queue
-- Redis Streams
 - frontend
-- Docker
 
 ## Requirements
 
@@ -33,19 +34,36 @@ npm install
 Create a `.env` file from `.env.example` and set:
 
 ```bash
+PORT=3000
+REDIS_URL=redis://redis:6379
+GROQ_API_KEY=your-groq-api-key
+TRANSCRIPTION_WS_URL=ws://transcription:6666/ws
+INTERNAL_API_TOKEN=
 BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
 HEADLESS=true
 DEBUG_SCREENSHOT_ROOT=debug-screenshots
-PORT=3000
+DEBUG_VIDEO_ROOT=debug-videos
 ```
 
-## Run Backend
+## Run With Docker Compose
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Services:
+
+- backend: `http://localhost:3000`
+- worker: consumes BullMQ jobs and launches per-request bot containers
+- transcription: `http://localhost:6666`
+- redis: `localhost:6379`
+
+## Run Backend Only
 
 ```bash
 npm run dev:backend
 ```
-
-The backend starts on `http://localhost:3000`.
 
 ## Manual Test Via CLI
 
@@ -56,7 +74,7 @@ npm run test:join -- --url "https://meet.google.com/your-meeting-code" --name "M
 ## Manual Test Via API
 
 ```bash
-curl -X POST http://localhost:3000/bot/join \
+curl -X POST http://localhost:3000/sessions \
   -H "Content-Type: application/json" \
   -d '{
     "meetUrl": "https://meet.google.com/your-meeting-code",
@@ -98,4 +116,6 @@ docker run --rm \
 - The join flow uses attribute/CSS selectors for the pre-join name, mic, camera, and join actions.
 - Debug screenshots are saved for both headed and headless runs under `debug-screenshots/<timestamp-mode-sessionId>/`.
 - The Docker image includes `xvfb`, so `HEADLESS=false` still works inside the container through a virtual display.
+- The backend container stays slim and only enqueues jobs plus serves session state.
+- The worker service talks to Docker and launches a fresh bot container for each queued meeting request.
 - Google Meet UI changes may require selector updates over time.

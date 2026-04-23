@@ -24,6 +24,7 @@ function parseBoolArg(flag: string, raw: string | undefined): boolean | undefine
 }
 
 async function main(): Promise<void> {
+  const sessionId = readArg('--session-id');
   const meetUrl = readArg('--url');
   const botDisplayName = readArg('--name') ?? 'Meeting Bot';
   const joinTimeoutMs = Number(readArg('--join-timeout-ms') ?? '45000');
@@ -34,18 +35,51 @@ async function main(): Promise<void> {
     throw new Error('Missing required --url argument.');
   }
 
-  const result = await joinMeet({
-    meetUrl,
-    botDisplayName,
-    joinTimeoutMs,
-    stayInMeetingMs,
-    headless,
-  });
+  const result = await joinMeet(
+    {
+      sessionId,
+      meetUrl,
+      botDisplayName,
+      joinTimeoutMs,
+      stayInMeetingMs,
+      headless,
+    },
+    {
+      onRecordingStarted: async ({ sessionId: activeSessionId, joinedAt }) => {
+        await notifyRecordingStarted(activeSessionId, joinedAt);
+      },
+    },
+  );
 
-  console.log(JSON.stringify(result, null, 2));
+  console.log(JSON.stringify(result));
 
   if (result.status !== 'JOINED') {
     process.exitCode = 1;
+  }
+}
+
+async function notifyRecordingStarted(sessionId: string, joinedAt: string): Promise<void> {
+  const backendInternalUrl = process.env.BACKEND_INTERNAL_URL;
+  if (!backendInternalUrl) {
+    return;
+  }
+
+  const response = await fetch(`${backendInternalUrl}/sessions/${sessionId}/status`, {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+      ...(process.env.INTERNAL_API_TOKEN
+        ? { authorization: `Bearer ${process.env.INTERNAL_API_TOKEN}` }
+        : {}),
+    },
+    body: JSON.stringify({
+      status: 'RECORDING',
+      joinedAt,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(`Failed to notify backend that recording started: ${response.status}`);
   }
 }
 
