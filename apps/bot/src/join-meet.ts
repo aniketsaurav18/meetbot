@@ -26,6 +26,11 @@ chromium.use(stealthPlugin);
 const DEFAULT_JOIN_TIMEOUT_MS = 60000;
 const DEFAULT_BROWSER_EXECUTABLE_PATH = process.env.BROWSER_EXECUTABLE_PATH ?? '/usr/bin/google-chrome';
 const DEFAULT_HEADLESS = process.env.HEADLESS !== 'false';
+const DEFAULT_TRANSCRIPTION_WS_URL = process.env.TRANSCRIPTION_WS_URL ?? 'ws://transcription:6666/ws';
+const DEFAULT_RECORDER_CHUNK_MS = Number(process.env.RECORDER_CHUNK_MS ?? '1000');
+const DEFAULT_RECORDER_MIME_TYPE = process.env.RECORDER_MIME_TYPE ?? 'audio/webm';
+const DEFAULT_TRANSCRIPTION_LANGUAGE = process.env.TRANSCRIPTION_LANGUAGE;
+const DEFAULT_TRANSCRIPTION_PROMPT = process.env.TRANSCRIPTION_PROMPT;
 const FALLBACK_BROWSER_EXECUTABLE_PATHS = [
   DEFAULT_BROWSER_EXECUTABLE_PATH,
   '/usr/bin/google-chrome',
@@ -103,7 +108,14 @@ export async function joinMeet(request: JoinMeetRequest): Promise<JoinMeetResult
     await saveDebugScreenshot(page, screenshotDir, 'after-join-click');
     await waitForJoinSuccess(page, joinTimeoutMs);
     await saveDebugScreenshot(page, screenshotDir, 'after-join-success');
-    injectRecorderScript(page);
+    await injectRecorderScript(page, {
+      wsUrl: resolveRecorderWebSocketUrl(sessionId),
+      sessionId,
+      chunkMs: DEFAULT_RECORDER_CHUNK_MS,
+      mimeType: DEFAULT_RECORDER_MIME_TYPE,
+      language: DEFAULT_TRANSCRIPTION_LANGUAGE,
+      prompt: DEFAULT_TRANSCRIPTION_PROMPT,
+    });
 
     const joinedAt = new Date().toISOString();
 
@@ -133,6 +145,25 @@ export async function joinMeet(request: JoinMeetRequest): Promise<JoinMeetResult
       await browser.close();
     }
   }
+}
+
+function resolveRecorderWebSocketUrl(sessionId: string): string {
+  const url = new URL(DEFAULT_TRANSCRIPTION_WS_URL);
+  url.searchParams.set('sessionId', sessionId);
+
+  if (DEFAULT_TRANSCRIPTION_LANGUAGE) {
+    url.searchParams.set('language', DEFAULT_TRANSCRIPTION_LANGUAGE);
+  }
+
+  if (DEFAULT_TRANSCRIPTION_PROMPT) {
+    url.searchParams.set('prompt', DEFAULT_TRANSCRIPTION_PROMPT);
+  }
+
+  if (DEFAULT_RECORDER_MIME_TYPE) {
+    url.searchParams.set('mimeType', DEFAULT_RECORDER_MIME_TYPE);
+  }
+
+  return url.toString();
 }
 
 async function createBrowserContext(
