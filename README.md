@@ -42,7 +42,7 @@ The **bot** (`apps/bot`) does not capture the system speaker; it records **what 
 
 3. **Mix with Web Audio** — It creates an `AudioContext` to merge all mediastream that we get from `<audio>` element.
 
-4. **Chunked `MediaRecorder`** — A `MediaRecorder` wraps `destination.stream`, preferring `audio/webm` when supported. Recording runs in **time slices**: each segment starts, runs for `chunkMs`, then stops; stopping schedules the next segment so the pipeline keeps emitting discrete blobs. 
+4. **Chunked `MediaRecorder`** — The Media recorder starts, records the defined duration sends the chunks to transcription service and gets destroyed. A new recorder instance is created to record next chunk.
 
 5. **Out of the browser** — On each `dataavailable` blob, the script base64-encodes the data and calls the bridge with a `chunk` payload (session id, sequence, mime type). The transcription service receives those chunks over the WebSocket and transcribes them.
 
