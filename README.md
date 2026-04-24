@@ -63,3 +63,15 @@ It also gives us freeway to scale-up or scale-down different component of the sy
 
 One more thing I did differently was to stream the transcribed chunks via redis, it gives us buffer and reliabliby that all chunks will be delivered to the client. It is also helpful when user reconnects to the streaming endpoint and we want to flush all the older transcript to the client.
 
+## Future Scopes
+
+This is a very janky and POC verion of what these system could be. 
+
+Things I would love to add/improve if I had time. 
+
+1. Adding timestamp to the transcript, I am already using 30sec interval to send audo for transcription. We can add a timestamp when the audio was started getting recorded, and when it was sent for processing.
+2. Call end indicator. It would be better if the bot checks the number of participants every few seconds, if its only 1. then it can safely leave the call with a 60 sec timeout, and it can notify the transcription or other service that the meet has ended.
+3. Video + Audio recording feature that gets saved into S3.
+4. Improve the websocket layer between Bot and Transcription service, by using sticky sessions, retry, ping, ack. That could help when system scales.
+5. Bot health system. The job of the worker (service that starts bot) should not be to only run the bot containers but rather orchertraste them. Crash recovery when the Bot container does not respond to ping from the worker.
+6. The session information are stored in memory in this implementation, adding a DB would be necessay.
