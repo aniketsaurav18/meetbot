@@ -6,6 +6,7 @@
     "packages/*"
   ],
   "scripts": {
+    "build:backend": "npm run build -w @meetingbot/shared && npm run build -w @meetingbot/backend",
     "dev:backend": "npm run dev -w @meetingbot/backend",
     "dev:worker": "npm run dev -w @meetingbot/worker",
     "dev:frontend": "npm run dev -w @meetingbot/frontend",

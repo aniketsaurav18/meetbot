@@ -2,10 +2,11 @@
   "name": "@meetingbot/backend",
   "version": "1.0.0",
   "private": true,
-  "main": "src/main.ts",
+  "main": "dist/main.js",
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
     "dev": "tsx src/main.ts",
-    "start": "tsx src/main.ts"
+    "start": "node dist/main.js"
   },
   "dependencies": {
     "@meetingbot/shared": "1.0.0",
@@ -19,6 +20,7 @@
     "rxjs": "^7.8.2"
   },
   "devDependencies": {
-    "@types/express": "^5.0.6"
+    "@types/express": "^5.0.6",
+    "tsx": "^4.21.0"
   }
 }

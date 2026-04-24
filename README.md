@@ -1,121 +1,65 @@
-# Meeting Bot
+# Meetingbot
 
-This repository contains a Google Meet bot flow with:
+A small stack for joining video meetings, recording audio, and streaming transcripts.
 
-- an Express backend that queues sessions in BullMQ/Redis
-- a separate worker service that consumes the queue and launches one bot container per meeting
-- a Playwright bot container that joins the meeting and streams audio chunks
-- a transcription service that receives chunks over WebSocket and writes transcript updates to Redis Streams
+## Apps at a glance
 
-## Current Scope
+- **bot** — Playwright-based process that joins a meeting, captures audio, and talks to the transcription service over WebSockets.
+- **backend** — NestJS API that owns session state, exposes HTTP for the UI, and enqueues join work on Redis/BullMQ.
+- **frontend** — Vite + React dashboard to start a session from a meet URL and watch status plus live transcript chunks.
+- **worker** — BullMQ worker that pulls join jobs and runs the bot (typically in Docker) with the right env and volumes.
+- **transcription** — Standalone HTTP/WebSocket service that accepts audio streams and turns them into text (e.g. via Groq), with optional debug audio dumps.
 
-Implemented:
-- Express backend API
-- BullMQ + Redis job queue
-- Playwright Google Meet join bot
-- transcription service with Redis Streams
-- Dockerfiles for all apps
-- `docker-compose.yml` for local startup
+## Build and run with Docker Compose
 
-Not implemented yet:
-- frontend
+You need [Docker](https://docs.docker.com/get-docker/) and the [Compose plugin](https://docs.docker.com/compose/install/) (`docker compose`).
 
-## Requirements
+1. From the repo root, create env file and set at least **Groq** for transcription:
 
-- Node.js 22+
-- Google Chrome installed at `/usr/bin/google-chrome`, or set `BROWSER_EXECUTABLE_PATH`
+   ```bash
+   cp .env.example .env
+   ```
 
-## Install
+   Edit `.env` and set `GROQ_API_KEY`.
 
-```bash
-npm install
-```
+2. Build images and start every service:
 
-Create a `.env` file from `.env.example` and set:
+   ```bash
+   docker compose up --build
+   ```
 
-```bash
-PORT=3000
-REDIS_URL=redis://redis:6379
-GROQ_API_KEY=your-groq-api-key
-TRANSCRIPTION_WS_URL=ws://transcription:6666/ws
-INTERNAL_API_TOKEN=
-BROWSER_EXECUTABLE_PATH=/usr/bin/google-chrome
-HEADLESS=true
-DEBUG_SCREENSHOT_ROOT=debug-screenshots
-DEBUG_VIDEO_ROOT=debug-videos
-```
+   Add `-d` if you want containers in the background.
 
-## Run With Docker Compose
+3. **URLs:** UI at [http://localhost:5173](http://localhost:5173) (nginx proxies `/sessions` and `/health` to the API). Backend directly: [http://localhost:3000](http://localhost:3000). Transcription HTTP/WebSocket: port **6666**. Redis: **6379**.
 
-```bash
-cp .env.example .env
-docker compose up --build
-```
+## How the bot captures audio in the browser
 
-Services:
+The **bot** (`apps/bot`) does not capture the system speaker; it records **what the meeting page plays** inside Chromium.
 
-- backend: `http://localhost:3000`
-- worker: consumes BullMQ jobs and launches per-request bot containers
-- transcription: `http://localhost:6666`
-- redis: `localhost:6379`
+1. **Join and inject** — After Playwright joins the Meet and the room is ready, the bot injects `apps/bot/src/scripts/recorder.js` into the page and registers a Playwright binding `__meetingbotRecorderBridge`. That binding forwards messages from the page to a Node WebSocket client, which streams them to the transcription service.
 
-## Run Backend Only
+2. **Find remote audio** — The script selects every `<audio>` element in the document. In Meet, participant audio is typically attached as a `MediaStream` on `audio.srcObject`. If none exist yet, it retries on an interval until elements appear.
 
-```bash
-npm run dev:backend
-```
+3. **Mix with Web Audio** — It creates an `AudioContext` to merge all mediastream that we get from `<audio>` element.
 
-## Manual Test Via CLI
+4. **Chunked `MediaRecorder`** — A `MediaRecorder` wraps `destination.stream`, preferring `audio/webm` when supported. Recording runs in **time slices**: each segment starts, runs for `chunkMs`, then stops; stopping schedules the next segment so the pipeline keeps emitting discrete blobs. 
 
-```bash
-npm run test:join -- --url "https://meet.google.com/your-meeting-code" --name "Meeting Bot" --join-timeout-ms 45000 --stay-ms 10000
-```
+5. **Out of the browser** — On each `dataavailable` blob, the script base64-encodes the data and calls the bridge with a `chunk` payload (session id, sequence, mime type). The transcription service receives those chunks over the WebSocket and transcribes them.
 
-## Manual Test Via API
+## Why headed Chrome instead of Playwright headless
 
-```bash
-curl -X POST http://localhost:3000/sessions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "meetUrl": "https://meet.google.com/your-meeting-code",
-    "botDisplayName": "Meeting Bot",
-    "joinTimeoutMs": 45000,
-    "stayInMeetingMs": 10000
-  }'
-```
+The bot **Docker image** defaults to **headed** Chrome (`HEADLESS=false` in `apps/bot/Dockerfile`). The container entrypoint starts **Xvfb** on `:99` and **PulseAudio** (`apps/bot/docker-entrypoint.sh`) so Chromium still has a normal display and audio stack—there is no physical monitor, only a virtual framebuffer.
 
-## Docker Bot Image
+**Reason:** Google Meet leans on **WebRTC** and in-tab media playback. Chromium’s classic **headless** mode has often been stricter or flakier for that stack. Also **headless** browser instance are more prone to be detected by anti bot measures then **headed** browsers. Running **headed** Chrome on Xvfb is much closer to a desktop browser, which tends to keep remote participant audio and the recorder script’s Web Audio / `MediaRecorder` path working more predictably.
 
-Build the bot image:
+**Downsides:** Headed Chrome on Xvfb is heavier than true headless—more CPU, RAM, and image size because you run a full UI stack plus **Xvfb** and **PulseAudio**. Startup is slower. Scaling many parallel bots on one host costs more than headless workers.
 
-```bash
-docker build -f apps/bot/Dockerfile -t meetingbot-bot .
-```
 
-Run it in headed mode inside a virtual display:
+## Why I seprated Transcription Service
 
-```bash
-docker run --rm \
-  --shm-size=1g \
-  -e BROWSER_EXECUTABLE_PATH=/usr/bin/chromium \
-  -e HEADLESS=false \
-  -e DEBUG_SCREENSHOT_ROOT=debug-screenshots \
-  -v "$(pwd)/debug-screenshots:/app/debug-screenshots" \
-  meetingbot-bot \
-  --url "https://meet.google.com/your-meeting-code" \
-  --name "Meeting Bot" \
-  --join-timeout-ms 45000 \
-  --stay-ms 10000
-```
+In the assingnment I was asked to stream the audio directly back to backend service, I felt it was not right from a system design perspective. seprating the Transcription service, seprates the concern from User specific sevice to the background service. 
 
-## Notes
+It also gives us freeway to scale-up or scale-down different component of the system independently.
 
-- Chromium runs in headless mode by default. Set `HEADLESS=false` if you want to watch the browser.
-- The current bot only handles the meeting join flow.
-- The bot goes directly to the Meet link and attempts a guest join.
-- The join flow uses attribute/CSS selectors for the pre-join name, mic, camera, and join actions.
-- Debug screenshots are saved for both headed and headless runs under `debug-screenshots/<timestamp-mode-sessionId>/`.
-- The Docker image includes `xvfb`, so `HEADLESS=false` still works inside the container through a virtual display.
-- The backend container stays slim and only enqueues jobs plus serves session state.
-- The worker service talks to Docker and launches a fresh bot container for each queued meeting request.
-- Google Meet UI changes may require selector updates over time.
+One more thing I did differently was to stream the transcribed chunks via redis, it gives us buffer and reliabliby that all chunks will be delivered to the client. It is also helpful when user reconnects to the streaming endpoint and we want to flush all the older transcript to the client.
+
