@@ -10,6 +10,7 @@
     "@meetingbot/shared": "1.0.0",
     "@playwright/test": "^1.59.1",
     "dotenv": "^17.4.2",
-    "playwright": "^1.59.1"
+    "playwright": "^1.59.1",
+    "ws": "^8.20.0"
   }
 }

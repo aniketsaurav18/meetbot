@@ -16,10 +16,13 @@ services:
       HOST: 0.0.0.0
       REDIS_URL: redis://redis:6379
       GROQ_API_KEY: ${GROQ_API_KEY}
+      TRANSCRIPTION_DEBUG_AUDIO_DIR: /data/transcription-debug-audio
     depends_on:
       - redis
     ports:
       - "6666:6666"
+    volumes:
+      - ${PWD}/transcription-debug-audio:/data/transcription-debug-audio
     restart: unless-stopped
 
   backend:
@@ -39,6 +42,12 @@ services:
       - "3000:3000"
     restart: unless-stopped
 
+  bot:
+    build:
+      context: .
+      dockerfile: apps/bot/Dockerfile
+    container_name: meetingbot-bot
+
   worker:
     build:
       context: .
@@ -49,23 +58,32 @@ services:
       BACKEND_INTERNAL_URL: http://backend:3000/internal
       INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:-}
       BOT_IMAGE: meetingbot-bot:latest
-      BOT_DOCKERFILE: /app/apps/bot/Dockerfile
-      BOT_BUILD_CONTEXT: /app
-      BOT_IMAGE_ALWAYS_BUILD: "true"
       DOCKER_NETWORK: meetingbot
       TRANSCRIPTION_WS_URL: ws://transcription:6666/ws
       BROWSER_EXECUTABLE_PATH: /usr/bin/google-chrome
       HEADLESS: "true"
-      BOT_SCREENSHOT_VOLUME: meetingbot_debug-screenshots
+      BOT_SCREENSHOT_VOLUME: ${PWD}/debug-screenshots
       BOT_VIDEO_VOLUME: meetingbot_debug-videos
       DEBUG_SCREENSHOT_ROOT: /tmp/meetingbot/debug-screenshots
       DEBUG_VIDEO_ROOT: /tmp/meetingbot/debug-videos
     depends_on:
+      - bot
       - redis
       - backend
       - transcription
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: apps/frontend/Dockerfile
+    container_name: meetingbot-frontend
+    depends_on:
+      - backend
+    ports:
+      - "5173:80"
     restart: unless-stopped
 
 networks:

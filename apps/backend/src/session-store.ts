@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { Injectable } from '@nestjs/common';
 import type {
   CreateSessionRequest,
   SessionRecord,
@@ -17,6 +18,7 @@ type SessionPatch = {
   attemptsMade?: number;
 };
 
+@Injectable()
 export class SessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly emitters = new Map<string, EventEmitter>();

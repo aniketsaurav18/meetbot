@@ -2,11 +2,11 @@ import http, { type IncomingMessage, type ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { WebSocketServer, type RawData, type WebSocket } from 'ws';
 
+import { flushDebugAudioState } from './debug-audio';
+
 export type ChunkMetadata = {
   sessionId?: string;
   mimeType?: string;
-  language?: string;
-  prompt?: string;
   streamKey?: string;
 };
 
@@ -38,19 +38,13 @@ export const wsPath = process.env.TRANSCRIPTION_WS_PATH ?? '/ws';
 const socketContexts = new WeakMap<WebSocket, ConnectionContext>();
 let processAudioChunkFn: TranscriptionProcessor | null = null;
 let resolveStreamKeyFn: ((metadata: ChunkMetadata) => string) | null = null;
-let defaultLanguage: string | undefined;
-let defaultPrompt: string | undefined;
 
 export function initWebSocket(
   processAudioChunk: TranscriptionProcessor,
   resolveStreamKey: (metadata: ChunkMetadata) => string,
-  lang?: string,
-  prompt?: string,
 ): void {
   processAudioChunkFn = processAudioChunk;
   resolveStreamKeyFn = resolveStreamKey;
-  defaultLanguage = lang;
-  defaultPrompt = prompt;
 }
 
 export function createWebSocketServer(server: http.Server): WebSocketServer {
@@ -65,6 +59,10 @@ export function createWebSocketServer(server: http.Server): WebSocketServer {
         socket.destroy();
         return;
       }
+
+      console.log(
+        `[transcription] upgrade request path=${url.pathname} sessionId=${url.searchParams.get('sessionId') ?? 'none'} host=${req.headers.host ?? 'unknown'}`,
+      );
 
       wss.handleUpgrade(req, socket, head, (ws) => {
         const context = buildConnectionContext(req);
@@ -84,6 +82,10 @@ export function createWebSocketServer(server: http.Server): WebSocketServer {
       return;
     }
 
+    console.log(
+      `[transcription] ws connected connectionId=${context.connectionId} sessionId=${context.sessionId ?? 'none'} mimeType=${context.mimeType ?? 'unknown'}`,
+    );
+
     safeSend(ws, {
       type: 'ready',
       connectionId: context.connectionId,
@@ -93,6 +95,9 @@ export function createWebSocketServer(server: http.Server): WebSocketServer {
 
     ws.on('message', (data, isBinary) => {
       if (isBinary) {
+        console.log(
+          `[transcription] ws binary chunk connectionId=${context.connectionId} sessionId=${context.sessionId ?? 'none'} sequence=${context.nextSequence} bytes=${toBuffer(data).length}`,
+        );
         enqueueBinaryChunk(ws, context, toBuffer(data));
         return;
       }
@@ -113,11 +118,25 @@ export function createWebSocketServer(server: http.Server): WebSocketServer {
         return;
       }
 
+      console.log(
+        `[transcription] ws control message connectionId=${context.connectionId} sessionId=${context.sessionId ?? 'none'} type=${typeof payload === 'object' && payload && 'type' in payload && typeof payload.type === 'string' ? payload.type : 'message'}`,
+      );
       handleSocketControlMessage(ws, context, payload);
     });
 
-    ws.on('close', () => {
-      context.pending.catch(() => undefined);
+    ws.on('close', (code, reason) => {
+      console.log(
+        `[transcription] ws closed connectionId=${context.connectionId} sessionId=${context.sessionId ?? 'none'} code=${code} reason=${reason.toString() || 'none'}`,
+      );
+      void context.pending
+        .catch(() => undefined)
+        .then(() =>
+          flushDebugAudioState({
+            connectionId: context.connectionId,
+            sessionId: context.sessionId,
+            mimeType: context.mimeType,
+          }),
+        );
     });
   });
 
@@ -138,16 +157,6 @@ export function buildConnectionContext(req: IncomingMessage): ConnectionContext 
     mimeType: firstDefined(
       url.searchParams.get('mimeType'),
       headerValue(req.headers['x-mime-type']),
-    ),
-    language: firstDefined(
-      url.searchParams.get('language'),
-      headerValue(req.headers['x-language']),
-      defaultLanguage,
-    ),
-    prompt: firstDefined(
-      url.searchParams.get('prompt'),
-      headerValue(req.headers['x-prompt']),
-      defaultPrompt,
     ),
     streamKey: firstDefined(
       url.searchParams.get('streamKey'),
@@ -205,6 +214,15 @@ function handleSocketControlMessage(ws: WebSocket, context: ConnectionContext, p
   }
 
   if (type === 'end') {
+    void context.pending
+      .catch(() => undefined)
+      .then(() =>
+        flushDebugAudioState({
+          connectionId: context.connectionId,
+          sessionId: context.sessionId,
+          mimeType: context.mimeType,
+        }),
+      );
     safeSend(ws, {
       type: 'ack',
       action: 'end',
@@ -222,8 +240,6 @@ function handleSocketControlMessage(ws: WebSocket, context: ConnectionContext, p
 function updateConnectionMetadata(context: ConnectionContext, payload: Record<string, unknown>): void {
   context.sessionId = firstDefined(getOptionalString(payload.sessionId), context.sessionId);
   context.mimeType = firstDefined(getOptionalString(payload.mimeType), context.mimeType);
-  context.language = firstDefined(getOptionalString(payload.language), context.language, defaultLanguage);
-  context.prompt = firstDefined(getOptionalString(payload.prompt), context.prompt, defaultPrompt);
   context.streamKey = firstDefined(getOptionalString(payload.streamKey), context.streamKey);
 }
 
@@ -248,10 +264,12 @@ function enqueueBinaryChunk(
         audio,
         sessionId: context.sessionId,
         mimeType: context.mimeType,
-        language: context.language,
-        prompt: context.prompt,
         streamKey: context.streamKey,
       });
+
+      console.log(
+        `[transcription] chunk processed connectionId=${context.connectionId} sessionId=${context.sessionId ?? 'none'} sequence=${sequence} textLength=${result.text.length} streamKey=${result.streamKey}`,
+      );
 
       safeSend(ws, {
         type: 'transcript',

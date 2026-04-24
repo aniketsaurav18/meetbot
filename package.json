@@ -8,6 +8,7 @@
   "scripts": {
     "dev:backend": "npm run dev -w @meetingbot/backend",
     "dev:worker": "npm run dev -w @meetingbot/worker",
+    "dev:frontend": "npm run dev -w @meetingbot/frontend",
     "test:join": "npm run cli:join -w @meetingbot/bot --"
   },
   "devDependencies": {

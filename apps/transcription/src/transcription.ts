@@ -1,4 +1,5 @@
 import Groq, { toFile } from 'groq-sdk';
+import { appendDebugAudioIfConfigured } from './debug-audio';
 import { redis } from './redis';
 import { type ChunkMetadata, type ChunkRequest, type TranscriptResult } from './websocket';
 
@@ -7,8 +8,7 @@ export const transcriptionModel =
   process.env.GROQ_TRANSCRIPTION_MODEL ??
   process.env.OPENAI_TRANSCRIPTION_MODEL ??
   'whisper-large-v3-turbo';
-export const defaultLanguage = emptyToUndefined(process.env.OPENAI_TRANSCRIPTION_LANGUAGE);
-export const defaultPrompt = emptyToUndefined(process.env.OPENAI_TRANSCRIPTION_PROMPT);
+
 
 const transcriptStreamPrefix = process.env.TRANSCRIPT_STREAM_PREFIX ?? 'transcript';
 const maxChunkBytes = Number(process.env.MAX_AUDIO_CHUNK_BYTES ?? 25 * 1024 * 1024);
@@ -35,6 +35,12 @@ export async function processAudioChunk(request: ChunkRequest): Promise<Transcri
   }
 
   const mimeType = request.mimeType ?? 'audio/webm';
+  try {
+    appendDebugAudioIfConfigured(request, mimeType);
+  } catch (error) {
+    console.error('[transcription] debug audio write failed:', error);
+  }
+
   const streamKey = resolveStreamKey(request);
   const transcription = await groq.audio.transcriptions.create({
     file: await toFile(request.audio, `chunk.${extensionForMimeType(mimeType)}`, {
@@ -42,8 +48,6 @@ export async function processAudioChunk(request: ChunkRequest): Promise<Transcri
     }),
     model: transcriptionModel,
     response_format: 'json',
-    ...(request.language ? { language: request.language } : {}),
-    ...(request.prompt ? { prompt: request.prompt } : {}),
   });
 
   const text = transcription.text.trim();
@@ -67,8 +71,6 @@ export async function processAudioChunk(request: ChunkRequest): Promise<Transcri
     String(request.sequence),
     'mimeType',
     mimeType,
-    'language',
-    request.language ?? '',
     'connectionId',
     request.connectionId ?? '',
     'receivedAt',

@@ -1,4 +1,5 @@
 import { setTimeout as delay } from 'node:timers/promises';
+import { Injectable } from '@nestjs/common';
 import IORedis from 'ioredis';
 import type { TranscriptChunk } from '@meetingbot/shared';
 import { SessionStore } from './session-store';
@@ -13,6 +14,7 @@ type SessionStreamState = {
   lastId: string;
 };
 
+@Injectable()
 export class TranscriptStreamBridge {
   private readonly sessions = new Map<string, SessionStreamState>();
   private readonly streamPrefix = process.env.TRANSCRIPT_STREAM_PREFIX ?? 'transcript';

@@ -1,12 +1,9 @@
 (function () {
     const injectedConfig = window.__MEETINGBOT_RECORDER_CONFIG__ || {};
     const config = {
-        wsUrl: injectedConfig.wsUrl || "ws://transcription:6666/ws",
         sessionId: injectedConfig.sessionId || "unknown-session",
         chunkMs: Number(injectedConfig.chunkMs || 1000),
         mimeType: injectedConfig.mimeType || "audio/webm",
-        language: injectedConfig.language || undefined,
-        prompt: injectedConfig.prompt || undefined,
     };
 
     function log(message, extra) {
@@ -19,50 +16,26 @@
 
     let audioContext;
     let mediaRecorder;
+    let segmentTimer;
+    let shouldContinueRecording = false;
     let destination;
-    let socket;
     let nextSequence = 1;
     const pendingBlobs = [];
 
-    function createSocket() {
-        socket = new WebSocket(config.wsUrl);
-
-        socket.addEventListener("open", function () {
-            log("websocket connected", config.wsUrl);
-            socket.send(JSON.stringify({
-                type: "start",
-                sessionId: config.sessionId,
-                mimeType: config.mimeType,
-                language: config.language,
-                prompt: config.prompt,
-            }));
-            flushPendingBlobs();
-        });
-
-        socket.addEventListener("close", function () {
-            log("websocket closed");
-        });
-
-        socket.addEventListener("error", function (event) {
-            log("websocket error", event);
-        });
-
-        socket.addEventListener("message", function (event) {
-            log("websocket message", event.data);
-        });
+    function getBridge() {
+        if (typeof window.__meetingbotRecorderBridge !== "function") {
+            throw new Error("Recorder bridge is not available on window.");
+        }
+        return window.__meetingbotRecorderBridge;
     }
 
-    function flushPendingBlobs() {
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
-            return;
-        }
-
+    async function flushPendingBlobs() {
         while (pendingBlobs.length > 0) {
             const blob = pendingBlobs.shift();
             if (!blob) {
                 continue;
             }
-            sendBlob(blob);
+            await sendBlob(blob);
         }
     }
 
@@ -73,15 +46,33 @@
         }
     }
 
-    function sendBlob(blob) {
-        if (!socket || socket.readyState !== WebSocket.OPEN) {
-            queueBlob(blob);
-            return;
+    async function blobToBase64(blob) {
+        const bytes = new Uint8Array(await blob.arrayBuffer());
+        let binary = "";
+
+        for (let index = 0; index < bytes.length; index += 0x8000) {
+            const chunk = bytes.subarray(index, index + 0x8000);
+            binary += String.fromCharCode.apply(null, chunk);
         }
 
-        socket.send(blob);
+        return btoa(binary);
+    }
+
+    async function sendBlob(blob) {
+        const sequence = nextSequence++;
+        const bridge = getBridge();
+        const data = await blobToBase64(blob);
+
+        await bridge({
+            type: "chunk",
+            sessionId: config.sessionId,
+            sequence: sequence,
+            mimeType: blob.type || config.mimeType,
+            data: data,
+        });
+
         log("sent blob", {
-            sequence: nextSequence++,
+            sequence: sequence,
             size: blob.size,
             type: blob.type || config.mimeType,
         });
@@ -132,7 +123,76 @@
         return undefined;
     }
 
-    function startRecordAudio() {
+    function createMediaRecorder() {
+        const recorderOptions = resolveRecorderOptions();
+        const recorder = recorderOptions
+            ? new MediaRecorder(destination.stream, recorderOptions)
+            : new MediaRecorder(destination.stream);
+
+        recorder.addEventListener("dataavailable", function (event) {
+            if (!event.data || event.data.size === 0) {
+                return;
+            }
+
+            queueBlob(event.data);
+            flushPendingBlobs().catch(function (error) {
+                log("failed to flush audio blobs", error);
+            });
+        });
+
+        recorder.addEventListener("start", function () {
+            log("recorder segment started");
+        });
+
+        recorder.addEventListener("stop", function () {
+            log("recorder segment stopped");
+            mediaRecorder = undefined;
+            if (shouldContinueRecording) {
+                window.setTimeout(startRecorderSegment, 0);
+            }
+        });
+
+        return recorder;
+    }
+
+    function startRecorderSegment() {
+        if (!shouldContinueRecording || !destination) {
+            return;
+        }
+
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            log("recorder segment already running");
+            return;
+        }
+
+        mediaRecorder = createMediaRecorder();
+        mediaRecorder.start();
+
+        segmentTimer = window.setTimeout(function () {
+            if (mediaRecorder && mediaRecorder.state === "recording") {
+                mediaRecorder.stop();
+            }
+        }, config.chunkMs);
+    }
+
+    function stopRecordAudio() {
+        shouldContinueRecording = false;
+        if (segmentTimer) {
+            window.clearTimeout(segmentTimer);
+            segmentTimer = undefined;
+        }
+        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+            mediaRecorder.stop();
+        }
+        getBridge()({
+            type: "end",
+            sessionId: config.sessionId,
+        }).catch(function (error) {
+            log("failed to signal recorder end", error);
+        });
+    }
+
+    async function startRecordAudio() {
         const mediaElements = findMediaElements();
         if (mediaElements.length === 0) {
             log("could not find media element, retrying");
@@ -140,7 +200,7 @@
             return;
         }
 
-        if (mediaRecorder && mediaRecorder.state !== "inactive") {
+        if (shouldContinueRecording || (mediaRecorder && mediaRecorder.state !== "inactive")) {
             log("recorder already running");
             return;
         }
@@ -151,37 +211,10 @@
             return;
         }
 
-        createSocket();
-
-        const recorderOptions = resolveRecorderOptions();
-        mediaRecorder = recorderOptions
-            ? new MediaRecorder(destination.stream, recorderOptions)
-            : new MediaRecorder(destination.stream);
-
-        mediaRecorder.addEventListener("dataavailable", function (event) {
-            if (!event.data || event.data.size === 0) {
-                return;
-            }
-            sendBlob(event.data);
-        });
-
-        mediaRecorder.addEventListener("start", function () {
-            log("recorder started");
-        });
-
-        mediaRecorder.addEventListener("stop", function () {
-            log("recorder stopped");
-            if (socket && socket.readyState === WebSocket.OPEN) {
-                socket.send(JSON.stringify({
-                    type: "end",
-                    sessionId: config.sessionId,
-                }));
-            }
-        });
-
-        mediaRecorder.start(config.chunkMs);
+        shouldContinueRecording = true;
+        startRecorderSegment();
     }
 
     window.startRecordAudio = startRecordAudio;
-    startRecordAudio();
+    window.stopRecordAudio = stopRecordAudio;
 })();

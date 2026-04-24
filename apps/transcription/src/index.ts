@@ -6,9 +6,8 @@ import {
   initWebSocket,
   wsPath,
 } from './websocket';
+import { initTranscriptionDebugAudioDir } from './debug-audio';
 import {
-  defaultLanguage,
-  defaultPrompt,
   healthPath,
   transcriptionModel,
   processAudioChunk,
@@ -26,17 +25,24 @@ const server = http.createServer((req, res) => {
   });
 });
 
-initWebSocket(processAudioChunk, resolveStreamKey, defaultLanguage, defaultPrompt);
+initWebSocket(processAudioChunk, resolveStreamKey);
 const wss = createWebSocketServer(server);
 
 async function bootstrap(): Promise<void> {
   await connectRedis();
 
-  await new Promise<void>((resolve) => {
+  await new Promise<void>((resolve, reject) => {
     server.listen(port, host, () => {
-      console.log(`[transcription] listening on http://${host}:${port}`);
-      console.log(`[transcription] websocket path ${wsPath}`);
-      resolve();
+      void (async () => {
+        try {
+          console.log(`[transcription] listening on http://${host}:${port}`);
+          console.log(`[transcription] websocket path ${wsPath}`);
+          await initTranscriptionDebugAudioDir();
+          resolve();
+        } catch (error) {
+          reject(error);
+        }
+      })();
     });
   });
 

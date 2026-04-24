@@ -1,9 +1,11 @@
+import { Injectable } from '@nestjs/common';
 import IORedis from 'ioredis';
 import { Queue, type JobsOptions } from 'bullmq';
 import type { JoinMeetingJob } from '@meetingbot/shared';
 
 export const queueName = process.env.BOT_QUEUE_NAME ?? 'meetingbot-join';
 
+@Injectable()
 export class BotQueue {
   private readonly connection: IORedis;
   private readonly queue: Queue<JoinMeetingJob>;

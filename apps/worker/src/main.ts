@@ -11,9 +11,6 @@ const workerConcurrency = Number(process.env.BOT_WORKER_CONCURRENCY ?? '1');
 const backendInternalUrl = stripTrailingSlash(process.env.BACKEND_INTERNAL_URL ?? 'http://backend:3000/internal');
 const internalApiToken = process.env.INTERNAL_API_TOKEN;
 const botImage = process.env.BOT_IMAGE ?? 'meetingbot-bot:latest';
-const botDockerfile = process.env.BOT_DOCKERFILE ?? '/app/apps/bot/Dockerfile';
-const botBuildContext = process.env.BOT_BUILD_CONTEXT ?? '/app';
-const botImageAlwaysBuild = process.env.BOT_IMAGE_ALWAYS_BUILD !== 'false';
 const dockerNetwork = process.env.DOCKER_NETWORK ?? 'meetingbot';
 const transcriptionWsUrl = process.env.TRANSCRIPTION_WS_URL ?? 'ws://transcription:6666/ws';
 const browserExecutablePath = process.env.BROWSER_EXECUTABLE_PATH ?? '/usr/bin/google-chrome';
@@ -23,14 +20,11 @@ const videoVolume = process.env.BOT_VIDEO_VOLUME ?? 'meetingbot_debug-videos';
 const screenshotRoot = process.env.DEBUG_SCREENSHOT_ROOT ?? '/tmp/meetingbot/debug-screenshots';
 const videoRoot = process.env.DEBUG_VIDEO_ROOT ?? '/tmp/meetingbot/debug-videos';
 
-let ensureBotImagePromise: Promise<void> | null = null;
 const connection = new IORedis(redisUrl, {
   maxRetriesPerRequest: null,
 });
 
 async function bootstrap(): Promise<void> {
-  await ensureBotImage();
-
   const worker = new Worker<JoinMeetingJob>(
     queueName,
     async (job) => {
@@ -44,7 +38,12 @@ async function bootstrap(): Promise<void> {
 
       const result = await runBotContainer(job.data);
       if (result.status === 'FAILED') {
-        throw new Error(result.message);
+        await updateSession(job.data.sessionId, {
+          status: 'FAILED',
+          attemptsMade,
+          error: result.message,
+        });
+        return result;
       }
 
       await updateSession(job.data.sessionId, {
@@ -87,37 +86,6 @@ async function bootstrap(): Promise<void> {
 
   console.log(`[worker] listening for queue ${queueName}`);
   registerShutdownHandlers(worker);
-}
-
-async function ensureBotImage(): Promise<void> {
-  if (!ensureBotImagePromise) {
-    ensureBotImagePromise = buildBotImageIfNeeded();
-  }
-
-  return ensureBotImagePromise;
-}
-
-async function buildBotImageIfNeeded(): Promise<void> {
-  if (botImageAlwaysBuild) {
-    console.log(`[worker] rebuilding bot image ${botImage}`);
-    const build = await runCommand(['build', '-f', botDockerfile, '-t', botImage, botBuildContext]);
-    if (build.exitCode !== 0) {
-      throw new Error(`Failed to build bot image ${botImage}:\n${build.stderr || build.stdout}`);
-    }
-    return;
-  }
-
-  const inspect = await runCommand(['image', 'inspect', botImage], true);
-  if (inspect.exitCode === 0) {
-    console.log(`[worker] using existing bot image ${botImage}`);
-    return;
-  }
-
-  console.log(`[worker] building bot image ${botImage}`);
-  const build = await runCommand(['build', '-f', botDockerfile, '-t', botImage, botBuildContext]);
-  if (build.exitCode !== 0) {
-    throw new Error(`Failed to build bot image ${botImage}:\n${build.stderr || build.stdout}`);
-  }
 }
 
 async function runBotContainer(job: JoinMeetingJob): Promise<JoinMeetResult> {
@@ -228,13 +196,17 @@ function runCommand(
     let stdout = '';
     let stderr = '';
 
-    child.stdout.on('data', (chunk: Buffer | string) => {
-      stdout += chunk.toString();
-    });
+    // child.stdout.on('data', (chunk: Buffer | string) => {
+    //   const text = chunk.toString();
+    //   stdout += text;
+    //   process.stdout.write(text);
+    // });
 
-    child.stderr.on('data', (chunk: Buffer | string) => {
-      stderr += chunk.toString();
-    });
+    // child.stderr.on('data', (chunk: Buffer | string) => {
+    //   const text = chunk.toString();
+    //   stderr += text;
+    //   process.stderr.write(text);
+    // });
 
     child.on('error', (error) => {
       reject(error);

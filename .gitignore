@@ -6,3 +6,4 @@ playwright-report
 test-results
 .playwright
 debug-screenshots/
+transcription-debug-audio/

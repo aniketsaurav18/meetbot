@@ -35,6 +35,10 @@ async function main(): Promise<void> {
     throw new Error('Missing required --url argument.');
   }
 
+  if (!sessionId) {
+    throw new Error('Missing required --session-id argument.');
+  }
+
   const result = await joinMeet(
     {
       sessionId,

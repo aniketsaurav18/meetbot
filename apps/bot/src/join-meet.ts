@@ -7,6 +7,7 @@ import { expect } from '@playwright/test';
 import { chromium } from 'playwright-extra';
 import type { Browser, BrowserContext, ElementHandle, Page } from 'playwright';
 import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import WebSocket from 'ws';
 import type { JoinMeetRequest, JoinMeetResult } from '@meetingbot/shared';
 import { injectRecorderScript } from './injector';
 import {
@@ -27,10 +28,9 @@ const DEFAULT_JOIN_TIMEOUT_MS = 60000;
 const DEFAULT_BROWSER_EXECUTABLE_PATH = process.env.BROWSER_EXECUTABLE_PATH ?? '/usr/bin/google-chrome';
 const DEFAULT_HEADLESS = process.env.HEADLESS !== 'false';
 const DEFAULT_TRANSCRIPTION_WS_URL = process.env.TRANSCRIPTION_WS_URL ?? 'ws://transcription:6666/ws';
-const DEFAULT_RECORDER_CHUNK_MS = Number(process.env.RECORDER_CHUNK_MS ?? '1000');
+const DEFAULT_RECORDER_CHUNK_MS = Number(process.env.RECORDER_CHUNK_MS ?? '10000');
 const DEFAULT_RECORDER_MIME_TYPE = process.env.RECORDER_MIME_TYPE ?? 'audio/webm';
-const DEFAULT_TRANSCRIPTION_LANGUAGE = process.env.TRANSCRIPTION_LANGUAGE;
-const DEFAULT_TRANSCRIPTION_PROMPT = process.env.TRANSCRIPTION_PROMPT;
+
 const FALLBACK_BROWSER_EXECUTABLE_PATHS = [
   DEFAULT_BROWSER_EXECUTABLE_PATH,
   '/usr/bin/google-chrome',
@@ -86,6 +86,23 @@ type JoinMeetHooks = {
   onRecordingStarted?: (details: { sessionId: string; joinedAt: string }) => Promise<void> | void;
 };
 
+type RecorderBridgePayload =
+  | {
+      type: 'chunk';
+      sessionId?: string;
+      sequence?: number;
+      mimeType?: string;
+      data: string;
+    }
+  | {
+      type: 'end';
+      sessionId?: string;
+    };
+
+type RecorderBridge = {
+  close: () => Promise<void>;
+};
+
 export async function joinMeet(
   request: JoinMeetRequest,
   hooks: JoinMeetHooks = {},
@@ -97,11 +114,12 @@ export async function joinMeet(
   let browser: Browser | undefined;
   let page: Page | undefined;
   let screenshotDir: string | undefined;
+  let recorderBridge: RecorderBridge | undefined;
 
   try {
     ({ browser, page } = await createBrowserContext(request.meetUrl, sessionId, headless));
 
-    screenshotDir = await createDebugScreenshotDir(sessionId, headless);
+    screenshotDir = await createDebugScreenshotDir(sessionId);
 
     await page.goto(request.meetUrl, {
       waitUntil: 'domcontentloaded',
@@ -115,18 +133,16 @@ export async function joinMeet(
     await saveDebugScreenshot(page, screenshotDir, 'after-join-click');
     await waitForJoinSuccess(page, joinTimeoutMs);
     await saveDebugScreenshot(page, screenshotDir, 'after-join-success');
+    recorderBridge = await createRecorderBridge(page, sessionId);
     await injectRecorderScript(page, {
-      wsUrl: resolveRecorderWebSocketUrl(sessionId),
       sessionId,
       chunkMs: DEFAULT_RECORDER_CHUNK_MS,
       mimeType: DEFAULT_RECORDER_MIME_TYPE,
-      language: DEFAULT_TRANSCRIPTION_LANGUAGE,
-      prompt: DEFAULT_TRANSCRIPTION_PROMPT,
     });
 
     const joinedAt = new Date().toISOString();
     await hooks.onRecordingStarted?.({ sessionId, joinedAt });
-    scheduleAutoLeave(browser, request.stayInMeetingMs);
+    // scheduleAutoLeave(browser, request.stayInMeetingMs);
 
     await waitForBrowserClosed(browser);
 
@@ -150,6 +166,10 @@ export async function joinMeet(
       message,
     };
   } finally {
+    await recorderBridge?.close().catch((error: unknown) => {
+      console.error(`${getCorrelationIdLog(sessionId)} Failed to close recorder bridge`, error);
+    });
+
     if (browser?.isConnected()) {
       await browser.close();
     }
@@ -160,19 +180,118 @@ function resolveRecorderWebSocketUrl(sessionId: string): string {
   const url = new URL(DEFAULT_TRANSCRIPTION_WS_URL);
   url.searchParams.set('sessionId', sessionId);
 
-  if (DEFAULT_TRANSCRIPTION_LANGUAGE) {
-    url.searchParams.set('language', DEFAULT_TRANSCRIPTION_LANGUAGE);
-  }
 
-  if (DEFAULT_TRANSCRIPTION_PROMPT) {
-    url.searchParams.set('prompt', DEFAULT_TRANSCRIPTION_PROMPT);
-  }
 
   if (DEFAULT_RECORDER_MIME_TYPE) {
     url.searchParams.set('mimeType', DEFAULT_RECORDER_MIME_TYPE);
   }
 
   return url.toString();
+}
+
+async function createRecorderBridge(page: Page, sessionId: string): Promise<RecorderBridge> {
+  const socket = await openRecorderSocket(resolveRecorderWebSocketUrl(sessionId), sessionId);
+
+  socket.on('message', (data) => {
+    console.log(`${getCorrelationIdLog(sessionId)} [recorder-bridge] message`, data.toString());
+  });
+
+  socket.on('close', (code, reason) => {
+    console.log(
+      `${getCorrelationIdLog(sessionId)} [recorder-bridge] closed code=${code} reason=${reason.toString() || 'none'}`,
+    );
+  });
+
+  socket.on('error', (error) => {
+    console.error(`${getCorrelationIdLog(sessionId)} [recorder-bridge] socket error`, error);
+  });
+
+  await page.exposeBinding('__meetingbotRecorderBridge', async (_source, payload: unknown) => {
+    await forwardRecorderPayload(socket, sessionId, payload);
+  });
+
+  return {
+    close: async () => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(JSON.stringify({ type: 'end', sessionId }));
+      }
+
+      await closeRecorderSocket(socket);
+    },
+  };
+}
+
+async function openRecorderSocket(wsUrl: string, sessionId: string): Promise<WebSocket> {
+  const log = `${getCorrelationIdLog(sessionId)} [recorder-bridge]`;
+  console.log('connecting to: ', wsUrl);
+  return new Promise((resolve, reject) => {
+    const socket = new WebSocket(wsUrl);
+    const cleanup = () => {
+      socket.off('open', handleOpen);
+      socket.off('error', handleError);
+    };
+
+    const handleOpen = () => {
+      cleanup();
+      console.log(`${log} connected ${wsUrl}`);
+      resolve(socket);
+    };
+
+    const handleError = (error: Error) => {
+      cleanup();
+      reject(new Error(`Failed to connect to the transcription websocket: ${error.message}`));
+    };
+
+    socket.on('open', handleOpen);
+    socket.on('error', handleError);
+  });
+}
+
+async function closeRecorderSocket(socket: WebSocket): Promise<void> {
+  if (socket.readyState === WebSocket.CLOSED) {
+    return;
+  }
+
+  if (socket.readyState === WebSocket.CLOSING) {
+    await new Promise<void>((resolve) => {
+      socket.once('close', () => resolve());
+    });
+    return;
+  }
+
+  await new Promise<void>((resolve) => {
+    socket.once('close', () => resolve());
+    socket.close();
+  });
+}
+
+async function forwardRecorderPayload(socket: WebSocket, sessionId: string, payload: unknown): Promise<void> {
+  if (socket.readyState !== WebSocket.OPEN) {
+    throw new Error('Transcription websocket is not open.');
+  }
+
+  if (!isRecorderBridgePayload(payload)) {
+    throw new Error('Recorder bridge payload is invalid.');
+  }
+
+  if (payload.type === 'end') {
+    socket.send(JSON.stringify({ type: 'end', sessionId: payload.sessionId ?? sessionId }));
+    return;
+  }
+
+  socket.send(Buffer.from(payload.data, 'base64'));
+}
+
+function isRecorderBridgePayload(value: unknown): value is RecorderBridgePayload {
+  if (!value || typeof value !== 'object' || !('type' in value) || typeof value.type !== 'string') {
+    return false;
+  }
+
+  if (value.type === 'end') {
+    return true;
+  }
+
+  return value.type === 'chunk' && 'data' in value && typeof value.data === 'string' && value.data.length > 0;
 }
 
 async function createBrowserContext(
@@ -280,31 +399,6 @@ async function launchBrowserWithTimeout(
   });
 }
 
-async function resolveBrowserExecutablePath(correlationId: string): Promise<string> {
-  const log = getCorrelationIdLog(correlationId);
-
-  for (const candidate of FALLBACK_BROWSER_EXECUTABLE_PATHS) {
-    if (await isExecutableFile(candidate)) {
-      if (candidate !== DEFAULT_BROWSER_EXECUTABLE_PATH) {
-        console.log(`${log} Falling back to browser executable ${candidate}`);
-      }
-      return candidate;
-    }
-  }
-
-  throw new Error(
-    `No browser executable found. Checked: ${FALLBACK_BROWSER_EXECUTABLE_PATHS.join(', ')}`,
-  );
-}
-
-async function isExecutableFile(filePath: string): Promise<boolean> {
-  try {
-    await access(filePath, fsConstants.X_OK);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 async function preparePrejoinScreen(page: Page, botDisplayName: string): Promise<void> {
   await waitForNameInput(page);
@@ -507,5 +601,31 @@ async function grantMediaPermissions(
     });
   } catch {
     // Ignore permission grant failures and continue with browser defaults.
+  }
+}
+
+async function resolveBrowserExecutablePath(correlationId: string): Promise<string> {
+  const log = getCorrelationIdLog(correlationId);
+
+  for (const candidate of FALLBACK_BROWSER_EXECUTABLE_PATHS) {
+    if (await isExecutableFile(candidate)) {
+      if (candidate !== DEFAULT_BROWSER_EXECUTABLE_PATH) {
+        console.log(`${log} Falling back to browser executable ${candidate}`);
+      }
+      return candidate;
+    }
+  }
+
+  throw new Error(
+    `No browser executable found. Checked: ${FALLBACK_BROWSER_EXECUTABLE_PATHS.join(', ')}`,
+  );
+}
+
+async function isExecutableFile(filePath: string): Promise<boolean> {
+  try {
+    await access(filePath, fsConstants.X_OK);
+    return true;
+  } catch {
+    return false;
   }
 }
