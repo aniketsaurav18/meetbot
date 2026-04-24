@@ -303,20 +303,10 @@ async function createBrowserContext(
   const executablePath = await resolveBrowserExecutablePath(correlationId);
   const debugVideoDir = resolveArtifactRoot(DEFAULT_DEBUG_VIDEO_ROOT);
   const browserArgs: string[] = [
-    '--enable-usermedia-screen-capturing',
-    '--allow-http-screen-capture',
     '--no-sandbox',
-    '--disable-setuid-sandbox',
-    '--disable-web-security',
-    '--use-gl=angle',
-    '--use-angle=swiftshader',
-    '--disable-dev-shm-usage',
     '--disable-gpu',
     '--disable-blink-features=AutomationControlled',
     `--window-size=${size.width},${size.height}`,
-    '--auto-accept-this-tab-capture',
-    '--enable-features=MediaRecorder',
-    '--enable-audio-service-out-of-process',
     '--autoplay-policy=no-user-gesture-required',
     '--use-fake-ui-for-media-stream', // Bypass permission prompt
     '--use-fake-device-for-media-stream' // Use fake camera/mic
