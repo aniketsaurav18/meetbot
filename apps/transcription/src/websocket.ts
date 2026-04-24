@@ -175,45 +175,12 @@ function handleSocketControlMessage(ws: WebSocket, context: ConnectionContext, p
   }
 
   const type = typeof payload.type === 'string' ? payload.type : 'message';
-  if (type === 'ping') {
-    safeSend(ws, { type: 'pong', connectionId: context.connectionId });
-    return;
-  }
-
-  if (type === 'start' || type === 'metadata' || type === 'config') {
-    updateConnectionMetadata(context, payload);
-    safeSend(ws, {
-      type: 'ack',
-      action: 'metadata',
-      connectionId: context.connectionId,
-      sessionId: context.sessionId ?? null,
-      streamKey: resolveStreamKeyFn!(context),
-    });
-    return;
-  }
-
-  if (type === 'chunk') {
-    updateConnectionMetadata(context, payload);
-    const base64Audio = getFirstString(payload.data, payload.audio, payload.chunk);
-
-    if (!base64Audio) {
-      safeSend(ws, {
-        type: 'error',
-        error: 'Chunk messages must include a base64 audio payload in data, audio, or chunk.',
-      });
-      return;
-    }
-
-    enqueueBinaryChunk(
-      ws,
-      context,
-      Buffer.from(base64Audio, 'base64'),
-      typeof payload.sequence === 'number' ? payload.sequence : undefined,
-    );
-    return;
-  }
-
   if (type === 'end') {
+    context.sessionId = firstDefined(
+      typeof payload.sessionId === 'string' ? payload.sessionId : undefined,
+      context.sessionId,
+    );
+
     void context.pending
       .catch(() => undefined)
       .then(() =>
@@ -237,19 +204,12 @@ function handleSocketControlMessage(ws: WebSocket, context: ConnectionContext, p
   });
 }
 
-function updateConnectionMetadata(context: ConnectionContext, payload: Record<string, unknown>): void {
-  context.sessionId = firstDefined(getOptionalString(payload.sessionId), context.sessionId);
-  context.mimeType = firstDefined(getOptionalString(payload.mimeType), context.mimeType);
-  context.streamKey = firstDefined(getOptionalString(payload.streamKey), context.streamKey);
-}
-
 function enqueueBinaryChunk(
   ws: WebSocket,
   context: ConnectionContext,
   audio: Buffer,
-  explicitSequence?: number,
 ): void {
-  const sequence = explicitSequence ?? context.nextSequence++;
+  const sequence = context.nextSequence++;
 
   context.pending = context.pending
     .then(async () => {
@@ -335,20 +295,6 @@ function firstDefined(...values: Array<string | undefined | null>): string | und
   for (const value of values) {
     if (typeof value === 'string' && value.trim()) {
       return value.trim();
-    }
-  }
-
-  return undefined;
-}
-
-function getOptionalString(value: unknown): string | undefined {
-  return typeof value === 'string' ? emptyToUndefined(value) : undefined;
-}
-
-function getFirstString(...values: unknown[]): string | undefined {
-  for (const value of values) {
-    if (typeof value === 'string' && value.trim()) {
-      return value;
     }
   }
 
